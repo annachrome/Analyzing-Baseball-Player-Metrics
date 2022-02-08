@@ -18,6 +18,10 @@ library(tidymodels)
 
 # Overview of the Dataset
 
+```{r}
+Batter_Metrics
+```
+
 The dataset will use are information on baseball players of ___team collected from 2021, in which individual baseball players are the observational unit. Corresponding independent categorical variables we will consider are (1) handedness, whether the player bats with his right or left arm; (2) position, (3) ; (4) . The independent quantitative variables we will consider are (1) ; (2) ; (3) ; (4) ; (5) ; (6) ; (7) ; (8) ; (9) ; (10) ; (11) ; (12) .
     
     - what is population
@@ -43,15 +47,3 @@ The dataset will use are information on baseball players of ___team collected fr
 
 # Discussion
 - discuss the limitations of describing a larger population.
-
-
-
-
-
-
-
-
-
-
-
-
