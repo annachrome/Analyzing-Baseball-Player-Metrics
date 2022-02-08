@@ -21,7 +21,7 @@ Batter_Metrics <- read_csv("Batter_Metrics.csv")
 
 # Overview of the Dataset
 
-```{r}
+```{r, include=FALSE}
 data.frame(Batter_Metrics)
 ```
 
@@ -61,7 +61,7 @@ linedrives_percent: the percentage of a batter's batted balls that are hit betwe
 
 
 # Summary Statistics 
-```{r}
+```{r, include=FALSE}
 skim_without_charts(Batter_Metrics)
 ```
 Perhaps the most important summarizing statistic that can be found here is the standard deviation in the total number of plate appearances (PA). One standard deviation is equal to 56.2 about a mean of 597. This is significant as it pertains to counting stats (as opposed to averages/rate stats). For example, if we were looking to compare players on their ability to hit home runs, simply comparing home run totals would not be the best way because of the variance in number of PAs. It would be better to use home run rate, HR/PA. This variance in sample size matters far less for averages/rate stats because they are adjusted for number of PAs and averages/rates tend to approach their "real" values in large samples (502 PAs being a pretty large sample). In our future analyses of this data set, we will confine ourselves to averages/rate stats.
