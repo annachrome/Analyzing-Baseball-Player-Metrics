@@ -41,7 +41,7 @@ isolated_power: where a single is worth 1 total base, a double is worth 2, and s
 
 exit_velocity_avg: the average velocity of the hitter's batted balls. 
 
-launch_angle_avg: the average vertical angle at which the ball leaves the hitter's bat, where 0° is parallel to the ground. 
+launch_angle_avg: the average vertical angle at which the ball leaves the hitter's bat, where 0 degrees is parallel to the ground. 
 
 sweet_spot_percent: the percentage of the hitter's batted balls that are hit between 8-32° launch angle. 
 
@@ -62,23 +62,33 @@ linedrives_percent: the percentage of a batter's batted balls that are hit betwe
 
 # Summary Statistics 
 ```{r}
-skim(Batter_Metrics)
+skim_without_charts(Batter_Metrics)
 ```
 Perhaps the most important summarizing statistic that can be found here is the standard deviation in the total number of plate appearances (PA). One standard deviation is equal to 56.2 about a mean of 597. This is significant as it pertains to counting stats (as opposed to averages/rate stats). For example, if we were looking to compare players on their ability to hit home runs, simply comparing home run totals would not be the best way because of the variance in number of PAs. It would be better to use home run rate, HR/PA. This variance in sample size matters far less for averages/rate stats because they are adjusted for number of PAs and averages/rates tend to approach their "real" values in large samples (502 PAs being a pretty large sample). In our future analyses of this data set, we will confine ourselves to averages/rate stats.
 
-We can gain further insight by comparing some of the means here to the overall 2021 MLB means. For example, the league-wide slash line (batting average/on base percentage/slugging percentage) in 2021 was .244/.317/.411. (see: https://www.baseball-reference.com/leagues/majors/2021.shtml). In this sample, the mean slash line is .265/.339/.457, which is better. This makes sense, as better players tend to be given more plate appearances, while many others do not receive enough to qualify. While some means in this sample may vary some from the greater population, it is a necessary sacrifice. In order to conduct linear regression tests that give us the most accurate possible view of the relationships between these variables, each player needs to have a sufficiently high number of plate appearances. These relationships will also apply to the greater population of MLB players. 
-
-    
-
-```{r, echo=FALSE}
-#bb_data <- read_csv("")
-#bb_model <- lm( ~ , data = bb_data) 
-```
-
-
+We can gain further insight by comparing some of the means here to the overall 2021 MLB means. For example, the league-wide slash line (batting average/on base percentage/slugging percentage) in 2021 was .244/.317/.411. (see: https://www.baseball-reference.com/leagues/majors/2021.shtml). In this sample, the mean slash line is .265/.339/.457, which is better. This makes sense, as better players tend to be given more plate appearances, while many others do not receive enough to qualify. While some means in this sample may vary some from the greater population of MLB players, it may be a necessary sacrifice. In order to conduct linear regression tests that give us the most accurate possible view of the relationships between these variables, each player needs to have a sufficiently high number of plate appearances. This way, we can avoid small sample noise. Lowering the plate appearance requirement for this data set would make this sample more similar to the average player, but there would still be difference in the same direction. To be able to compare the two, we have have to sample almost the entire population. We will say that this sample is taken from the population of MLB players with roughly a full season's worth of plate appearances (502+). 
 
 
 # Graphical Analysis
+
+```{r, echo=FALSE}
+Batter_Metrics %>% 
+  ggplot(aes(x = player_age)) + 
+  geom_histogram() 
+```
+```{r, echo=FALSE}
+Batter_Metrics %>% 
+  ggplot(aes(x = batting_avg)) + 
+  geom_histogram() 
+```
+```{r, echo=FALSE}
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+getmode(Batter_Metrics$batting_avg)
+```
 
 - Graphical displays with adequate explanation / interpretation (These should effectively summarize your data and point out any interesting features. 
 
