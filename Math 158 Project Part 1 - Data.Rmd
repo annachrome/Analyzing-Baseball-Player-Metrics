@@ -37,7 +37,7 @@ b_bb_percent: the rate at which the batter walks. Walks/plate appearances.
 
 batting_avg: the rate at which the batter gets base hits. Hits/at bats. 
 
-isolated_power: where a single is worth 1 total base, a double is worth 2, and so on, $ISO=(total bases - singles)/at bats$
+isolated_power: where a single is worth 1 total base, a double is worth 2, and so on, $ISO=\frac{\text{total bases - singles}}{\text{at bats}}$
 
 exit_velocity_avg: the average velocity of the hitter's batted balls. 
 
@@ -64,36 +64,105 @@ linedrives_percent: the percentage of a batter's batted balls that are hit betwe
 ```{r, include=FALSE}
 skim_without_charts(Batter_Metrics)
 ```
-Perhaps the most important summarizing statistic that can be found here is the standard deviation in the total number of plate appearances (PA). One standard deviation is equal to 56.2 about a mean of 597. This is significant as it pertains to counting stats (as opposed to averages/rate stats). For example, if we were looking to compare players on their ability to hit home runs, simply comparing home run totals would not be the best way because of the variance in number of PAs. It would be better to use home run rate, HR/PA. This variance in sample size matters far less for averages/rate stats because they are adjusted for number of PAs and averages/rates tend to approach their "real" values in large samples (502 PAs being a pretty large sample). In our future analyses of this data set, we will confine ourselves to averages/rate stats.
-
-We can gain further insight by comparing some of the means here to the overall 2021 MLB means. For example, the league-wide slash line (batting average/on base percentage/slugging percentage) in 2021 was .244/.317/.411. (see: https://www.baseball-reference.com/leagues/majors/2021.shtml). In this sample, the mean slash line is .265/.339/.457, which is better. This makes sense, as better players tend to be given more plate appearances, while many others do not receive enough to qualify. While some means in this sample may vary some from the greater population of MLB players, it may be a necessary sacrifice. In order to conduct linear regression tests that give us the most accurate possible view of the relationships between these variables, each player needs to have a sufficiently high number of plate appearances. This way, we can avoid small sample noise. Lowering the plate appearance requirement for this data set would make this sample more similar to the average player, but there would still be difference in the same direction. To be able to compare the two, we have have to sample almost the entire population. We will say that this sample is taken from the population of MLB players with roughly a full season's worth of plate appearances (502+). 
-
-
-# Graphical Analysis
 
 ```{r, echo=FALSE}
 Batter_Metrics %>% 
-  ggplot(aes(x = player_age)) + 
-  geom_histogram() 
+  ggplot(aes(x = b_total_pa)) + 
+  coord_fixed(ratio = 15) +
+  geom_histogram(binwidth=4, ) 
 ```
+
+Perhaps the most important summarizing statistic that can be found here is the standard deviation in the total number of plate appearances (b_total_pa). One standard deviation is equal to 56.2 about a mean of 597. This is significant as it pertains to counting statistics (as opposed to averages or rate statistics). For example, if we were looking to compare players on their ability to hit home runs, simply comparing home run totals would not be the best way because of the variance in number of PAs. It would be better to use home run rate, HR/PA. This variance in sample size matters less for averages/rate statistics, because they are adjusted for number of PAs and averages/rates tend to approach their "real" values in large samples (502 PAs being a pretty large sample). In our future analyses of this data set, we will confine ourselves to averages/rate statistics.
+
+We can gain further insight by comparing some of the means here to the overall 2021 Major League Baseball (MLB) means. For example, the league-wide slash line (batting average/on base percentage/slugging percentage) in 2021 was .244/.317/.411. (see: https://www.baseball-reference.com/leagues/majors/2021.shtml). In this sample, the mean slash line is .265/.339/.457, which is better. This makes sense, as better players tend to be given more plate appearances, while many others do not receive enough to qualify. While some means in this sample may vary from the greater population of MLB players, it is a necessary sacrifice in order to conduct linear regression tests that give us a more accurate view of the relationships between these variables, each player needs to have a sufficiently high number of plate appearances. This way, we can avoid small sample noise. Lowering the plate appearance requirement for this data set would make this sample more similar to the average player, but there would still be difference in the same direction. To be able to compare the two, we have have to sample almost the entire population. We will say that this sample is taken from the population of MLB players with roughly a full season's worth of plate appearances (502+). 
+
 ```{r, echo=FALSE}
 Batter_Metrics %>% 
   ggplot(aes(x = batting_avg)) + 
+  coord_fixed(ratio = 0.004) +
   geom_histogram() 
 ```
-```{r, echo=FALSE}
-getmode <- function(v) {
-   uniqv <- unique(v)
-   uniqv[which.max(tabulate(match(v, uniqv)))]
-}
 
-getmode(Batter_Metrics$batting_avg)
+The batting average, traditionally used as the metric to determine how good a player is, has a mean of 0.265 which is also the mode, i.e. batting average of most players. Some outliers on both extremes may also explain outliers in the following two variables of interest.
+
+Some metrics that baseball fans have begun to prioritize over the batting average include the walk rate (b_bb_percent), and the percentage of swings on pitches inside the zone (z_swing_percent), both of which have bell-shaped distributions and are skewed to the left. In particular, the walk rate has at least one outlier to the right. It will be worth investigating whether these two variables are related to the traditionally used batting average. 
+
+```{r, echo=FALSE}
+library(gridExtra)
+
+bb_plot <- ggplot(data=Batter_Metrics, aes(x = b_bb_percent)) + 
+  geom_histogram(bins=30) 
+
+zswing_plot <- ggplot(data=Batter_Metrics, aes(x = z_swing_percent)) + 
+  geom_histogram(bins=30) 
+
+require(gridExtra)
+grid.arrange(bb_plot, zswing_plot, ncol=2)
+```
+As for statistics regarding batters' swings, both the sweet spot percentage and the exit velocity average are quite symmetric bell shapes with one outlier to the left. It will be worth exploring whether these two variable are related, and whether they are explanatory variables for the determinants of a "good player" mentioned above.
+```{r, echo=FALSE}
+library(gridExtra)
+
+ss_plot <- ggplot(data=Batter_Metrics, aes(x = sweet_spot_percent)) + 
+  coord_fixed(ratio = 1.3) +
+  geom_histogram(bins=30) 
+
+ev_plot <- ggplot(data=Batter_Metrics, aes(x = exit_velocity_avg)) + 
+  coord_fixed(ratio = 0.5) +
+  geom_histogram(bins=30) 
+
+require(gridExtra)
+grid.arrange(ss_plot, ev_plot, ncol=2)
 ```
 
-- Graphical displays with adequate explanation / interpretation (These should effectively summarize your data and point out any interesting features. 
+# Graphical Analysis
 
-- quantitative vs quantitative - categories in colors
-- no linear models
+Following analysis above regarding traditional and newer conceptions of a "good player," initial plots don't seem to show a strong relationship between the walk rate and the batting average, and may even show some negative correlation even though 
+```{r, echo=FALSE}
+# LD%, batting average
+Batter_Metrics %>% 
+  ggplot(aes(x = b_bb_percent, y =batting_avg)) +
+  coord_fixed(ratio = 60) +
+  geom_point()
+```
+
+The following scatter plot also seems to indicate that the exit velocity of a hit is not strongly related to the batting average, implying that the former variable may not be as significant in predicting whether a player gets base hits.
+```{r, echo=FALSE}
+# LD%, batting average
+Batter_Metrics %>% 
+  ggplot(aes(x = exit_velocity_avg, y =batting_avg)) +
+  coord_fixed(ratio = 50) +
+  geom_point()
+```
+
+However, there does seem to be an upward trend relating a player's sweet spot percentage and his batting average.
+
+```{r, echo=FALSE}
+# LD%, batting average
+Batter_Metrics %>% 
+  ggplot(aes(x = sweet_spot_percent, y =batting_avg)) +
+  coord_fixed(ratio = 100) +
+  geom_point()
+```
+
+Another initial scatter plot worth noting shows that a player's batting average increases steadily with the percentage of line drives (balls batted at 10-25° launch angle), which makes sense as the latter is considered an optimal hit.
+```{r, echo=FALSE}
+# LD%, batting average
+Batter_Metrics %>% 
+  ggplot(aes(x = linedrives_percent, y =batting_avg)) +
+  coord_fixed(ratio = 60) +
+  geom_point()
+```
+
+```{r, echo=FALSE}
+# LD%, batting average
+Batter_Metrics %>% 
+  ggplot(aes(x = pull_percent, y =whiff_percent)) +
+  coord_fixed(ratio = 0.6) +
+  geom_point()
+```
 
 # Discussion
-- discuss the limitations of describing a larger population.
+This preliminary analysis of our dataset shows most variables are have bell-shaped distributions, but skews and asymmetry may warrant some investigation. We have also observed some outliers in multiple variables; determining whether these outliers originate from the same players, and consideration of the outliers' effects on future inference will be required. The apparent lack of relationship between certain variables is surprising and may be so, or other relationships may become apparent with transformations.
+
+As discussed, our sample of players who qualified for end-of-year awards is quite representative of our population of MLB players. However, a broader population of, for example, all competitive baseball players, may not be suitable since our sample is limited to male American players.
