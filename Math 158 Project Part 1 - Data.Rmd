@@ -10,7 +10,6 @@ knitr::opts_chunk$set(echo = TRUE,
                       message = FALSE, warning = FALSE,
                       fig.width = 5, fig.height = 3.5, 
                       fig.align = 'center')
-
 library(tidyverse)
 library(broom)
 library(tidymodels)
@@ -89,28 +88,22 @@ Some metrics that baseball fans have begun to prioritize over the batting averag
 
 ```{r, echo=FALSE}
 library(gridExtra)
-
 bb_plot <- ggplot(data=Batter_Metrics, aes(x = b_bb_percent)) + 
   geom_histogram(bins=30) 
-
 zswing_plot <- ggplot(data=Batter_Metrics, aes(x = z_swing_percent)) + 
   geom_histogram(bins=30) 
-
 require(gridExtra)
 grid.arrange(bb_plot, zswing_plot, ncol=2)
 ```
 As for statistics regarding batters' swings, both the sweet spot percentage and the exit velocity average are quite symmetric bell shapes with one outlier to the left. It will be worth exploring whether these two variable are related, and whether they are explanatory variables for the determinants of a "good player" mentioned above.
 ```{r, echo=FALSE}
 library(gridExtra)
-
 ss_plot <- ggplot(data=Batter_Metrics, aes(x = sweet_spot_percent)) + 
   coord_fixed(ratio = 1.3) +
   geom_histogram(bins=30) 
-
 ev_plot <- ggplot(data=Batter_Metrics, aes(x = exit_velocity_avg)) + 
   coord_fixed(ratio = 0.5) +
   geom_histogram(bins=30) 
-
 require(gridExtra)
 grid.arrange(ss_plot, ev_plot, ncol=2)
 ```
@@ -166,3 +159,5 @@ Batter_Metrics %>%
 This preliminary analysis of our dataset shows most variables are have bell-shaped distributions, but skews and asymmetry may warrant some investigation. We have also observed some outliers in multiple variables; determining whether these outliers originate from the same players, and consideration of the outliers' effects on future inference will be required. The apparent lack of relationship between certain variables is surprising and may be so, or other relationships may become apparent with transformations.
 
 As discussed, our sample of players who qualified for end-of-year awards is quite representative of our population of MLB players. However, a broader population of, for example, all competitive baseball players, may not be suitable since our sample is limited to male American players.
+
+

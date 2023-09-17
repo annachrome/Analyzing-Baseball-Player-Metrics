@@ -1,0 +1,371 @@
+---
+title: "M158 Project Part 3 (Elliott, Choi)"
+author: "Riley and Anna"
+date: '2022-03-28'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 8, 
+                      fig.align = 'center')
+
+
+library(tidymodels)
+library(schrute)
+library(tidyverse)
+library(tidymodels)
+library(knitr)
+library(broom)
+library(lubridate)
+library(janitor)
+library(GGally)
+library(ggplot2)
+library(rsample)
+library(patchwork)
+library("readxl")
+Batters <- read_excel("Batters.xlsx")
+```
+
+
+## Introdution
+
+  We scraped all of the data used in the following analysis from baseballsavant.com, the online depot for all publicly available advanced metrics on Major League Baseball players. Our sample is 131 of the 132 MLB hitters who "qualified" for end-of-year awards during the 2021 season by recording at least 502 plate appearances. Our data set is a collection of these players' 2021 statistics. 
+  
+  We chose to remove one particular observation because our previous analysis of this data set revealed that this player is a significant outlier when it comes to average launch angle (LA), one of our predictor variables of interest. Launch angle is the vertical angle at which the ball leaves a hitter's bat, where 0° is parallel to the ground and 90° is straight up in the air, and the outlier had a negative launch angle which implied that player often batted balls straight into the ground. Thus, to maintain our population as MLB qualifiers, we removed this player who clearly performed badly. Our concern was that this player was such an outlier that the ISO vs. LA model we built was entirely unable to predict him correctly. The population we will generalize our findings to is all MLB players with similar plate appearance quantities and positive LA, regardless of year. 
+  
+  The response variable we are interested in modeling/predicting is Isolated Power (ISO). Isolated power is meant to quantify how much power a hitter demonstrates during games. It calculates the rate at which they hit for "extra" total bases. Where a single is 1 total base, a double is 2, a triple is 3, and a home run is 4, ISO is calculated by $ISO=\frac{\text{(Total Bases) - (Singles)}}{\text{(At Bats)}}$. Our goal in this analysis is to use statistics that measure innate player skills and/or tendencies to predict how much power a player will demonstrate during games (according to ISO) with the highest possible accuracy. 
+  
+
+## Predictor variables under consideration
+
+  The first of our predictor variables of interest is **barrel percentage (BRL%)**. BRL% combines information about the launch angles and exit velocities of a hitter's batted balls. In our previous analysis of this data set, we found that 31.5% of the variation in ISO could be explained by average launch angle alone. Exit velocity is the velocity of the ball in MPH immediately after being hit in play by the batter. If a batter hits the ball with a 98 MPH exit velocity, it must be hit between 26 and 30° to be defined as a barrel. If they hit it at 99 MPH, it must be hit between 25 and 31°. This pattern continues--every 1 MPH increase in exit velocity loosens the launch angle requirement by 2 total degrees (one in each direction). We are also interested in the somewhat aforementioned **average launch angle (LA)**, **average exit velocity (EV)**, and two statistics that provide almost identical information (**sweet spot percentage** and **hard hit rate**). These variables will obviously correlate very highly with BRL%, but we want to see which correlate best with our response variable in the bivariate sense. 
+  
+  Another predictor of interest is **pull percentage (PULL%)**, or the percentage of a hitter's batted balls that are hit to the same third of the field as the side of home plate from which they bat (e.g. right vs. left). 
+  
+  Finally, we are also interested in including swing discipline and contact ability statistics as predictors in our model. We anticipate significant correlation between at least a few of these such variables. Not all will be simultaneously used in our final model. The variables are: 
+  
+**Zone swing percentage (Z-Swing%)**, the percentage of pitches in the strike zone that the batter swings at. 
+
+**Zone swing and miss percentage (Z-Miss%)**, the percentage of pitches in the strike zone that the batter swings at and misses. 
+
+**Out of zone swing percentage (OZ-Swing%)**, the percentage of pitches in outside of the strike zone that the batter swings at. 
+
+**Out of zone swing and miss percentage (OZ-Miss%)**, the percentage of pitches outside of the strike zone that the batter swings at and misses. 
+
+**Walk rate (BB%)**, the percentage of plate appearances in which the batter draws a walk (by not swinging at 4 out-of-zone pitches). 
+
+  Each of the other variables in our model were not of interest for a variety of reasons. Chief among them: ISO was dependent upon the variable in an objective mathematical sense (ex. batting_avg), the variable was already sufficiently represented by others in the model that were more interesting (ex. opposite_percent), or the variable was a cumulative statistic. In our previous analysis of this data set we decided we would not use cumulative stats because of the differences in plate appearance totals from player to player. 
+
+
+## Checking for multicollinearity
+
+```{r, echo=FALSE, fig.cap = "Correlation between predictor variables"}
+NewBatters <- Batters %>% select(isolated_power, barrel_batted_rate, exit_velocity_avg, hard_hit_percent, launch_angle_avg, sweet_spot_percent, pull_percent, z_swing_percent, z_swing_miss_percent, oz_swing_percent, oz_swing_miss_percent, b_bb_percent)
+
+NewBatters %>% ggpairs()
+```
+
+  As we can see in Figure 1, some correlation exists between all variables as expected. Our subjective threshold for where correlation between predictor variables becomes too significant to include both in the model is at strength 0.6. Of all the predictor variables, BRL% had the highest correlation with ISO at 0.877. We decided to remove the other variables that gave information about launch angle or exit velocity (LA, EV, SwSp%, HH%) out of the concern that they correlated too highly with BRL% or were otherwise redundant. These plots confirm that at least EV (0.681 correlation) and HH% (0.682 correlation) seemed to be highly correlated with BRL%. 
+
+PULL% had a .575 correlation with ISO and non-significant correlation with the other variables we ended up including. 
+
+BB% had a .361 correlation with ISO and non-significant correlation with the other variables we ended up including. 
+
+Among the other variables of interest, only Z-Swing% was uncorrelated with any of our other predictor variables of interest. It had a correlation of strength .368 with ISO. For an example of a variable that was rejected, see Z-Miss%. It had a correlation of strength .703 with BRL%, raising concerns about multicollinearity, hence we will take Z-Miss% out of consideration for the remainder of this analysis.
+
+After performing this multicollinearity test, we were left with four variables of interest: BRL%, PULL%, BB%, and Z-Swing%. The strengths of correlation between BRL%:PULL% (0.431) and BRL%:BB% (0.419) remain somewhat high. We will focus on these relationships when checking to see if interaction variables are necessary. 
+
+
+
+
+## Feature engineering
+
+  In the following Figures 2, 3, 4, 5, let's take a closer look at the bivariate relationships between each predictor and our response variable to see if any feature engineering is required. 
+  
+```{r, echo=FALSE, fig.cap = "Isolated power and Barrel Batted Rate"}
+Batters_lm1 <- lm(isolated_power ~ barrel_batted_rate, data=Batters)
+
+p1 <- Batters %>%
+  ggplot(aes(x = barrel_batted_rate, y = isolated_power)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE)
+
+p2 <- Batters_lm1 %>%
+  augment() %>% 
+  ggplot(aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", se = FALSE)
+
+p1 <- p1 + labs(subtitle = "ISO vs. BRL%")
+p2 <- p2 + labs(subtitle = "Residuals vs. Fitted values")
+
+p1+p2
+```
+
+```{r, echo=FALSE, fig.cap = "Isolated Power and Zone Swing Percentage"}
+Batters_lm2 <- lm(isolated_power ~ z_swing_percent, data=Batters)
+
+p1 <- Batters %>%
+   ggplot(aes(x = z_swing_percent, y = isolated_power)) +
+   geom_point() +   
+   geom_smooth(method = "lm", se = FALSE)
+
+p2 <- Batters_lm2 %>%
+  augment() %>% 
+  ggplot(aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", se = FALSE)
+
+p1 <- p1 + labs(subtitle = "ISO vs. Z-Swing%")
+p2 <- p2 + labs(subtitle = "Residuals vs. Fitted values")
+
+p1+p2
+```
+
+
+```{r, echo=FALSE, fig.cap = "Isolated Power and Pull Percentage"}
+Batters_lm3 <- lm(isolated_power ~ pull_percent, data=Batters)
+
+p1 <- Batters %>%
+   ggplot(aes(x = pull_percent, y = isolated_power)) +
+   geom_point() +   
+   geom_smooth(method = "lm", se = FALSE)
+
+p2 <- Batters_lm3 %>%
+  augment() %>% 
+  ggplot(aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", se = FALSE)
+
+p1 <- p1 + labs(subtitle = "ISO vs. PULL%")
+p2 <- p2 + labs(subtitle = "Residuals vs. Fitted values")
+
+p1+p2
+```
+
+
+```{r, echo=FALSE, fig.cap = "Isolated Power and Walk Rate"}
+Batters_lm4 <- lm(isolated_power ~ b_bb_percent, data=Batters)
+
+p1 <- Batters %>%
+   ggplot(aes(x = b_bb_percent, y = isolated_power)) +
+   geom_point() +   
+   geom_smooth(method = "lm", se = FALSE)
+
+p2 <- Batters_lm4 %>%
+  augment() %>% 
+  ggplot(aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", se = FALSE)
+
+p1 <- p1 + labs(subtitle = "ISO vs. BB%")
+p2 <- p2 + labs(subtitle = "Residuals vs. Fitted values")
+
+p1+p2
+```
+
+  These plots indicate that the LINE conditions (linearity, independence of data points, normality of errors, and equal variance/homoskedasticity) for each predictor-response relationship are strong. 
+  
+  If we have one concern, it is in the last set of plots (ISO vs. BB%). From this last residual plot, the LINE conditions appear to hold as well, but there is one player that is a pretty massive outlier in terms of BB% (Juan Soto). His ISO doesn't appear to be much more than 1 standard deviation away from the value predicted by our model, though, indicating that this data point does not radically alter our model. Conclude that feature engineering is not necessary. 
+  
+
+
+
+
+
+
+## Interaction variables
+
+```{r, echo=FALSE}
+lm(isolated_power ~ (barrel_batted_rate + z_swing_percent + pull_percent + b_bb_percent)^2, data=Batters) %>% 
+  tidy()
+```
+
+  In our multicollinearity analysis, we noted that BRL% had a non-significant (according to our own definition) yet slightly concerning amount of correlation with PULL% and BB%. The p-values here corroborate this. None of the bivariate relationships yielded p-values below alpha=0.05, so we did not reject the null hypothesis ($H_0=$ no relationship) in any of the above cases. We did come very close to rejecting the null when it came to the BRL%:PULL% relationship, however (p=0.0532). Just in case, we will run a nested F test to see if both variables are necessary in the model. 
+  
+```{r, EVAL = TRUE, echo = FALSE}
+Reduced_lm <- lm(isolated_power ~ z_swing_percent + b_bb_percent + pull_percent + barrel_batted_rate, data = Batters)
+Full_lm <- lm(isolated_power ~ z_swing_percent + b_bb_percent + c(pull_percent + barrel_batted_rate), data = Batters)
+
+anova(Reduced_lm)
+anova(Full_lm)
+anova(Reduced_lm, Full_lm)
+```
+
+Given a P value of 8.5e-12, we reject the null hypothesis that BRL% and PULL% share the same coefficient. Interaction variables are not necessary. 
+
+
+## Comparing two models using cross validation
+
+Although we concluded that an interaction variable of BRL% and PULL% was not necessary in the previous section, it was a borderline decision, hence hypothesize that having both of these variables may reduce the fit of the model, and prioritize BRL% since it correlated highly with our response variable compared to PULL%.
+
+
+Define a full model with explanatory variables BRL%, PULL%, BB%, and Z-Swing%, and a reduced model that has all of these but PULL%, and compare the two through 3-fold cross validation with training data which is two-thirds of our dataset.
+
+```{r, echo=FALSE}
+set.seed(4774)
+Batters_split <- initial_split(Batters, prop = 2/3)
+Batters_train <- training(Batters_split)
+Batters_test <- testing(Batters_split)
+```
+
+```{r, echo = FALSE}
+spec <- linear_reg() %>%
+  set_engine("lm")
+
+full_recipe <- recipe(
+  isolated_power ~ z_swing_percent + b_bb_percent + pull_percent + barrel_batted_rate, 
+  data = Batters) %>% 
+  step_zv(all_predictors())
+
+reduced_recipe <- recipe(
+  isolated_power ~ z_swing_percent + b_bb_percent + barrel_batted_rate,
+  data = Batters) %>% 
+  step_zv(all_predictors())
+
+wflow_full <- workflow() %>% 
+  add_model(spec) %>% 
+  add_recipe(full_recipe)
+
+wflow_reduced <- workflow() %>% 
+  add_model(spec) %>% 
+  add_recipe(reduced_recipe)
+```
+
+
+Our full model:
+```{r, echo=FALSE}
+fit_full <- wflow_full %>% 
+  fit(data=Batters_train)
+
+fit_full %>% tidy()
+```
+Our reduced model:
+```{r, echo=FALSE}
+fit_reduced <- wflow_reduced %>% 
+  fit(data=Batters_train)
+
+fit_reduced %>% tidy()
+```
+```{r, echo=FALSE}
+set.seed(345)
+folds <- vfold_cv(Batters_train, v=3)
+```
+
+```{r, echo=FALSE}
+set.seed(456)
+
+fit_rs_full <- wflow_full %>% 
+  fit_resamples(folds)
+```
+```{r, echo=FALSE}
+set.seed(456)
+
+fit_rs_reduced <- wflow_reduced %>% 
+  fit_resamples(folds)
+```
+```{r}
+collect_metrics(fit_rs_full)
+```
+
+```{r}
+collect_metrics(fit_rs_reduced)
+```
+```{r, include=FALSE}
+Batters %>% glimpse()
+```
+
+Below are the $R^2$ and RMSE of the full model on the test data:
+```{r, echo=FALSE}
+preds_full <- wflow_full %>% 
+  fit(data=Batters_train) %>% 
+  predict(Batters_test) %>% 
+  bind_cols(Batters_test %>% select(isolated_power, last_name))
+
+preds_full %>% 
+  rsq(truth = isolated_power, estimate = .pred)
+```
+```{r, echo=FALSE}
+preds_full %>% 
+  rmse(truth = isolated_power, estimate = .pred)
+```
+
+Below are the $R^2$ and RMSE of the reduced model on the test data:
+```{r, echo=FALSE}
+preds_reduced <- wflow_reduced %>% 
+  fit(data=Batters_train) %>% 
+  predict(Batters_test) %>% 
+  bind_cols(Batters_test %>% select(isolated_power, last_name))
+
+preds_reduced %>% 
+  rsq(truth = isolated_power, estimate = .pred)
+```
+```{r, echo=FALSE}
+preds_reduced %>% 
+  rmse(truth = isolated_power, estimate = .pred)
+```
+
+Since our full model has a higher $R^2$ and a lower RMSE on both the training and the test data, we will choose the full model over the reduced model out of the two.
+
+
+## Choosing a statistical model
+
+Now, instead of choosing predictor variables ourselves, run the forward selection algorithm (forward and backward selection yield the same model) on all predictor variables listed initially, with the selection criteria being the F-statistic.
+
+```{r}
+#FULL mod
+stats::step(lm(isolated_power ~ 1, data=Batters_train), 
+            isolated_power ~ exit_velocity_avg + launch_angle_avg + sweet_spot_percent + hard_hit_percent + barrel_batted_rate + pull_percent + z_swing_percent + z_swing_miss_percent + oz_swing_percent + oz_swing_miss_percent + b_bb_percent, 
+            direction = "forward", test = "F") 
+```
+
+The algorithm suggests a 7-variable model of barrel_batted_rate, launch_angle_avg,    z_swing_percent, z_swing_miss_percent, pull_percent, sweet_spot_percent, and b_bb_percent.
+
+
+
+## Final statistics and analysis
+We decide to choose the simpler computational model since the statistical model has many instances of multicollinearity. We test the significance of the model's coefficients through overall F tests, with the null hypotheses that each $\beta_i=0$ and alternative hypotheses that $\beta_i\neq0$.
+
+```{r}
+final_mod <- lm(isolated_power ~ z_swing_percent + b_bb_percent + pull_percent + barrel_batted_rate, 
+  data = Batters) 
+
+final_mod %>% anova()
+```
+Since all of the p-values are very small, reject each null hypothesis and conclude that all variables are significant.
+
+  From the section "Comparing two models using cross validation," we had found that our final model (the full model), fit to the testing data, had $R^2=0.811$ and $RMSE=0.246$ which is quite ideal. Nevertheless, while a high $R^2$ means the model can explain a large proportion of the variability, it does not necessarily guarantee an accurate description of the population since the model may be overfitting and explaining random variability as part of the model. However, our process of cross-validation and comparing train and test data results diminish this argument and convincingly demonstrate that this model can be highly representative of the population. 
+  
+  Another reason a high $R^2$ is not necessarily good is that outliers with high leverage and influence may deceivingly produce a high $R^2$ when the model, considered without these outliers, is not at all an accurate description of our model. However, from the following residual plot, we can see that no particular observations have particularly high leverage or influence.
+  
+  
+```{r, fig.cap = "Residual Plot of Final Model"}
+final_mod %>%
+  augment() %>% 
+  ggplot(aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_smooth(formula = y ~ x, method = "lm", se = FALSE)
+```
+Lastly, let us draw some predictions from our model.
+  
+```{r, echo=FALSE}
+# CI for mean response
+Batters %>% 
+       lm(isolated_power ~ z_swing_percent + b_bb_percent + pull_percent + barrel_batted_rate, data = .) %>%
+       augment(newdata = data.frame(z_swing_percent = c(69.9), b_bb_percent = c(15), pull_percent = c(46.6), barrel_batted_rate = c(22.3)), interval = "confidence", conf.level = 0.95)
+```
+
+```{r, echo=FALSE}
+# PI for individual response
+Batters %>% 
+       lm(isolated_power ~ z_swing_percent + b_bb_percent + pull_percent + barrel_batted_rate, data = .) %>%
+       augment(newdata = data.frame(z_swing_percent = c(69.9), b_bb_percent = c(15), pull_percent = c(46.6), barrel_batted_rate = c(22.3)), interval = "prediction", conf.level = 0.95)
+```
+
+  Taking Shohei Ohtani's metrics as our explanatory variables, since he had the highest isolated power percentage of 0.335 in this dataset, our model gives a 95% confidence interval of [0.325,	0.352] and a 95% prediction interval of [0.290, 0.387] for the isolated power percentage (rounded to three significant figures).
+
+## Summary
+
+  Our intention with this analysis was to create a model that best predicts the ISOs of qualified MLB players using statistics that measure innate player skills and/or tendencies. We began by setting our focus on a large group of such predictors, and narrowed that focus by testing for multicollinearity. The four variables we were interested in building our model with were BRL%, PULL%, BB%, and Z-Swing%. After confirming that feature engineering and interaction variables were not necessary, we aimed to find the combination of these variables that, when placed into a model, yielded the strongest predictions. A simple computational model containing BRL%, PULL%, BB%, and Z-Swing% ended up being the best model when accounting for multicollinearity. This model had $R^2=0.811$, a great improvement over our model regressing ISO on LA in the SLR analysis, which produced $R^2=0.315$. 

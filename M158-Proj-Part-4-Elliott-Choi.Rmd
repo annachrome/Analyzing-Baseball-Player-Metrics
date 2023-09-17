@@ -1,0 +1,607 @@
+---
+title: "M158 Project Part 4"
+author: "Riley Elliott and Anna Choi"
+date: '2022-05-10'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 8, 
+                      fig.align = 'center')
+
+
+library(tidymodels)
+library(schrute)
+library(tidyverse)
+library(tidymodels)
+library(knitr)
+library(broom)
+library(lubridate)
+library(janitor)
+library(GGally)
+library(ggplot2)
+library(rsample)
+library(patchwork)
+library("readxl")
+library(splines)
+library(MASS)
+library(FNN) 
+library(kknn)
+knitr::opts_chunk$set(echo = TRUE)
+Batters <- read_excel("Batters.xlsx")
+```
+
+# Sparse and Smooth Linear Models
+
+## Introduction
+
+  We scraped the data used in the following analysis from baseballsavant.com, the online depot for all publicly available advanced metrics on Major League Baseball players. Our sample is 131 of the 132 MLB hitters who "qualified" for end-of-year awards during the 2021 season by recording at least 502 plate appearances. One player was removed because preliminary data analysis revealed that he was an extreme outlier in average launch angle (LA), which feeds into some of our variables of interest. The population to which we infer results to, therefore, is all MLB players with positive LA who collect at least 502 plate appearances in any season. 
+  
+  Our response variable of interest is **Isolated Power (ISO)**, which attempts to quantify how much power a hitter demonstrates during games. It calculates the rate at which they hit for "extra" total bases. Where a single is 1 total base, a double is 2, a triple is 3, and a home run is 4, ISO is calculated by $ISO=\frac{\text{(Total Bases) - (Singles)}}{\text{(At Bats)}}$. 
+  
+  Our chief predictor variables of interest express some combination of how hard a batter hits the ball, the vertical angle at which they hit it, the horizontal direction in which they hit it, and the quality of their swing decisions. The four main predictors of interest are:
+  
+**Barrel percentage (BRL%)**. BRL% combines information about the launch angles and exit velocities of a hitter's batted balls. If a batter hits the ball with a 98 MPH exit velocity, it must be hit between 26 and 30 vertical degrees to be defined as a barrel. If they hit it at 99 MPH, it must be hit between 25 and 31°. This pattern continues--every 1 MPH increase in exit velocity loosens the launch angle requirement by 2 total degrees (one in each direction).
+
+**Pull percentage (PULL%)**, the percentage of a hitter's batted balls that are hit to the same third of the field as the side of home plate from which they bat (e.g. right vs. left).
+
+**Walk rate (BB%)**, the percentage of plate appearances in which the batter draws a walk (by not swinging at 4 out-of-zone pitches). 
+
+**Zone swing percentage (Z-Swing%)**, the percentage of pitches in the strike zone at which the batter swings. 
+
+
+## Running Ridge Regression and LASSO
+
+  First, let's find the lambda value that best minimizes $MSE$ and maximizes $R^2$ for Ridge Regression. We do this using cross validation. 
+
+```{r, include=FALSE}
+set.seed(47)
+
+#merge last and first name into column "NAME"
+Batters$NAME <- paste(Batters$FIRST_NAME, " ",Batters$LAST_NAME)
+named_Batters <- dplyr::select(Batters, -c(FIRST_NAME, LAST_NAME, MODE_AMATEUR_ACQUISITION))
+
+Batters_split <- initial_split(named_Batters, prop = 2/3)
+Batters_train <- training(Batters_split)
+Batters_test <- testing(Batters_split)
+```
+
+```{r, include=FALSE}
+Batters_rec <- recipe(ISO ~ ., data = Batters_train) %>%
+  update_role(NAME, new_role = "ID") %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_zv(all_predictors())
+```
+
+  Both shrinkage methods, RR and Lasso, start with all predictor variables in the model (though Lasso eliminates some of the less consequential ones during the process by making their coefficients equal to 0). Some feature engineering was required to make this possible. We turned the predictors FIRST_NAME and LAST_NAME into a single ID variable and turned all categorical variables except MODE_AMATEUR_ACQUISITION into dummy variables. MODE_AMATEUR_ACQUISITION was removed from the data set because one observation represented an entire category, which caused the number of variables in the training and test data sets to differ. We were not particularly interested in MODE_AMATEUR_ACQUISITION and its relationship to ISO, so we removed it to avoid the issue entirely. These decisions are discussed further during part 2 of this project (below). 
+  
+  The sample sizes of the training and test data sets were set at 2/3 and 1/3 of the total data set, respectively. As always, we will build each model using the training set and fit it to the test set to get an idea of how well it fits the population. 
+
+
+```{r, include=FALSE}
+ridge_spec_tune <- linear_reg(mixture = 0, penalty = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+```
+
+```{r, include=FALSE}
+set.seed(1234)
+Batters_fold <- vfold_cv(Batters_train)
+  
+ridge_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50)
+
+ridge_wf <- workflow() %>%
+  add_recipe(Batters_rec)
+
+ridge_fit <- ridge_wf %>%
+  add_model(ridge_spec_tune) %>%
+  fit(data = Batters_train)
+
+# this is the line that tunes the model using cross validation
+set.seed(2020)
+ridge_cv <- tune_grid(
+  ridge_wf %>% add_model(ridge_spec_tune),
+  resamples = Batters_fold,
+  grid = ridge_grid
+)
+```
+
+```{r, include=FALSE}
+collect_metrics(ridge_cv) %>%
+  filter(.metric == "rmse") %>%
+  arrange(penalty)
+```
+
+  We constructed 50 ridge regression models using our CV training data. Below, we have plotted the $RMSE$ and $R^2$ values, respectively, against the penalties. 
+
+
+```{r, , echo=FALSE, fig.cap = "RMSE and R2 of RR models against lambda values"}
+autoplot(ridge_cv)
+```
+ 
+  We can see that, according to both $RMSE$ and $R^2$, the superior models are those with lower penalties (those closest to OLS). The first 14 models return identical $RMSE$ and $R^2$ values, so the penalties associated with any of those models would be a good option. We chose model 1, which has lambda = 1.0e-05. A ridge regression model with this lambda value creates a model with the following coefficients for each of our predictor variables:
+
+```{r, echo=FALSE}
+best_rr <- select_best(ridge_cv, metric = "rmse")
+finalize_workflow(ridge_wf %>% add_model(ridge_spec_tune), best_rr) %>%
+  fit(data = Batters_test) %>% tidy()
+```
+
+
+  Now, we turn to LASSO.
+
+```{r, include=FALSE}
+lasso_spec_tune <- linear_reg(mixture = 1, penalty = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+```
+
+```{r, include=FALSE}
+lasso_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50)
+
+lasso_wf <- workflow() %>%
+  add_recipe(Batters_rec)
+
+lasso_fit <- lasso_wf %>%
+  add_model(lasso_spec_tune) %>%
+  fit(data = Batters_train)
+
+# this is the line that tunes the model using cross validation
+set.seed(2020)
+lasso_cv <- tune_grid(
+  lasso_wf %>% add_model(lasso_spec_tune),
+  resamples = Batters_fold,
+  grid = lasso_grid
+)
+```
+
+```{r, include=FALSE}
+collect_metrics(lasso_cv) %>%
+  filter(.metric == "rmse") %>%
+  arrange(desc(.metric))
+```
+
+  We constructed 50 Lasso models using our CV training data. Below is a graph that plots the $RMSE$ and $R^2$ values of those models on the data against the lambda values. 
+
+```{r, echo=FALSE, fig.cap = "RMSE and R2 of LASSO models against lambda values"}
+autoplot(lasso_cv)
+```
+  
+  Again, according to both $RMSE$ and $R^2$, the superior models are those with lower penalties (those closest to OLS). Any of the first 9 penalty values will do. We will choose the first model again. It also has lambda = 1.0e-5. A LASSO model with this lambda value creates a model with the following coefficients for each of our predictor variables:
+
+```{r, echo=FALSE}
+best_lasso <- select_best(lasso_cv, metric = "rmse")
+finalize_workflow(lasso_wf %>% add_model(lasso_spec_tune), best_lasso) %>%
+  fit(data = Batters_test) %>% tidy()
+```
+
+  We are aiming to compare RR, LASSO, and OLS models. We have what we need to build the first two. The OLS model was constructed previously in project 3.
+
+
+## Model Comparison: MLR, RR, and LASSO
+
+```{r, include=FALSE}
+ridge_spec <- linear_reg(mixture = 0, penalty = 0.00001) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+  
+ridge_wf <- workflow() %>%
+  add_recipe(Batters_rec)
+
+ridge_fit <- ridge_wf %>%
+  add_model(ridge_spec) %>%
+  fit(data = Batters_train)
+
+ridge_preds <- ridge_fit %>% augment(new_data = Batters_test) %>% 
+  dplyr::select(ISO, .pred) %>%
+  mutate(method = "RR")
+```
+
+```{r, include=FALSE}
+lasso_spec <- linear_reg(mixture = 1, penalty = 0.00001) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+  
+lasso_wf <- workflow() %>%
+  add_recipe(Batters_rec)
+
+lasso_fit <- lasso_wf %>%
+  add_model(lasso_spec) %>%
+  fit(data = Batters_train)
+
+lasso_preds <- lasso_fit %>% augment(new_data = Batters_test) %>% 
+  dplyr::select(ISO, .pred) %>%
+  mutate(method = "LASSO")
+```
+
+```{r, include=FALSE}
+MLR_mod <- lm(ISO ~ Z_SWING_PERCENT + BB_PERCENT + PULL_PERCENT + BRL_PERCENT, 
+  data = Batters_test) 
+
+MLR_mod %>% tidy()
+```
+
+```{r, include=FALSE}
+OLS_preds <- MLR_mod %>% augment(new_data = Batters_train) %>%
+  mutate(.pred = .fitted) %>%
+  dplyr::select(ISO, .pred) %>%
+  mutate(method = "OLS")
+```
+
+```{r, echo=FALSE, fig.cap = "Predicted vs. Observed ISO Values for 3 Models"}
+pred_comp <- ridge_preds %>% bind_rows(lasso_preds) %>% bind_rows(OLS_preds)
+
+pred_comp %>%
+  ggplot(aes(x = ISO, y = .pred, color = method)) +
+  geom_smooth(se=FALSE) +
+  geom_abline(slope = 1, intercept = 0) +
+  geom_point(alpha=1)
+```
+
+  The model with the .pred vs. ISO line that most closely resembles y=x (the black line in the plot above) will be most desirable as the predictions will most closely resemble the actual values. It is apparent that the LASSO-generated model, lasso_preds, is most desirable. It most closely resembles y=x in terms of both position and linearity. 
+
+
+## Regression Spline and Loess Smoother Methods
+
+  Smoothing methods all function on models with only one predictor variable. In the following analysis, we will use BRL% as our one predictor. Our previous analyses revealed that it had the highest bivariate correlation with our response (ISO). We therefore have more interest in using it as a single predictor of ISO. First, we will build a number of such models using regression splines. Depending on the degree of the polynomial used to model each region and the total number of regions (and therefore, degrees of freedom), these models will differ in regards to the bias-variance tradeoff. 
+
+```{r, include=FALSE}
+set.seed(4747)
+ISO_rec <- recipe(ISO ~ BRL_PERCENT, data = Batters) %>%
+  step_bs(BRL_PERCENT, deg_free = tune(), degree = tune())
+
+ISO_cv <- vfold_cv(Batters, v = 5)
+
+ISO_lm <- linear_reg() %>%
+  set_engine("lm")
+
+ISO_df <- grid_regular(deg_free(range = c(5, 15)), 
+                        degree(range = c(1,5)) , levels = 5)
+
+ISO_tuned <- ISO_lm %>%
+  tune_grid(ISO_rec,
+            resamples = ISO_cv,
+            grid = ISO_df)
+
+collect_metrics(ISO_tuned)
+```
+
+```{r, echo=FALSE, fig.cap = "RMSE and R2 of models of varying degree, degrees of freedom"}
+collect_metrics(ISO_tuned) %>%
+  ggplot(aes(x = deg_free, y = mean, color = as.factor(degree))) + 
+  geom_line() + 
+  facet_grid(.metric ~ .) + 
+  labs(color = "degree") + 
+  ylab("") + 
+  xlab("degrees of freedom (# coefficients)")
+```
+  This plot allows us to see how we can optimize $RMSE$ and $R^2$ by adjusting the aforementioned parameters. Generally, we can see that modeling the relationship with lower-degree polynomials typically yields the best fit. This makes sense, as previous examinations of our data revealed that the relationship between ISO and BRL_PERCENT is linear. 
+  
+  Using this plot, we selected 4 models that represented a good mix of the parameters but also did a good job of optimizing $RMSE$ and $R^2$. These are the models with df=10 and degree=1, df=15 and degree=2, df=5 and degree=3, and df=10 and degree=3. The tidy widgets and scatter plots for the 4 models are shown below. 
+
+
+```{r, echo=FALSE}
+# df = 10, degree = 1
+BRL_PERCENT_knot1 <- bs(Batters$BRL_PERCENT, df = 10, degree=1)
+
+ISO_rs1 <- lm(ISO ~ BRL_PERCENT_knot1, data=Batters)
+ISO_rs1 %>% tidy
+```
+
+```{r, echo=FALSE}
+# regression spline predictions
+ISO_rs1 %>% 
+  augment(se_fit = TRUE) %>% 
+  bind_cols(Batters) %>%
+  rename(ISO = ISO...1) %>%
+  mutate(upper = .fitted + 2*.se.fit,
+         lower = .fitted - 2*.se.fit) %>%
+  ggplot(aes(x = BRL_PERCENT, y = ISO)) + 
+  geom_point() + 
+  geom_line(aes(y = .fitted), color = "blue") + 
+  geom_line(aes(y = upper), lty = 3, color = "blue") + 
+  geom_line(aes(y = lower), lty = 3, color = "blue") + 
+  ggtitle("Regression Spline Fit (df = 10, degree = 1)")
+```
+
+
+```{r, echo=FALSE}
+# df = 15, degree = 2
+BRL_PERCENT_knot2 <- bs(Batters$BRL_PERCENT, df = 15, degree=2)
+
+ISO_rs2 <- lm(ISO ~ BRL_PERCENT_knot2, data=Batters)
+ISO_rs2 %>% tidy
+```
+
+```{r, echo=FALSE}
+# regression spline predictions
+ISO_rs2 %>% 
+  augment(se_fit = TRUE) %>% 
+  bind_cols(Batters) %>%
+  rename(ISO = ISO...1) %>%
+  mutate(upper = .fitted + 2*.se.fit,
+         lower = .fitted - 2*.se.fit) %>%
+  ggplot(aes(x = BRL_PERCENT, y = ISO)) + 
+  geom_point() + 
+  geom_line(aes(y = .fitted), color = "blue") + 
+  geom_line(aes(y = upper), lty = 3, color = "blue") + 
+  geom_line(aes(y = lower), lty = 3, color = "blue") + 
+  ggtitle("Regression Spline Fit (df = 15, degree = 2)")
+```
+
+
+```{r, echo=FALSE}
+# df = 5, degree = 3
+BRL_PERCENT_knot3 <- bs(Batters$BRL_PERCENT, df = 5, degree=3)
+
+ISO_rs3 <- lm(ISO ~ BRL_PERCENT_knot3, data=Batters)
+ISO_rs3 %>% tidy
+```
+
+```{r, echo=FALSE}
+# regression spline predictions
+ISO_rs3 %>% 
+  augment(se_fit = TRUE) %>% 
+  bind_cols(Batters) %>%
+  rename(ISO = ISO...1) %>%
+  mutate(upper = .fitted + 2*.se.fit,
+         lower = .fitted - 2*.se.fit) %>%
+  ggplot(aes(x = BRL_PERCENT, y = ISO)) + 
+  geom_point() + 
+  geom_line(aes(y = .fitted), color = "blue") + 
+  geom_line(aes(y = upper), lty = 3, color = "blue") + 
+  geom_line(aes(y = lower), lty = 3, color = "blue") + 
+  ggtitle("Regression Spline Fit (df = 5, degree = 3)")
+```
+
+```{r, echo=FALSE}
+# df = 10, degree = 3
+BRL_PERCENT_knot4 <- bs(Batters$BRL_PERCENT, df = 10, degree=3)
+
+ISO_rs4 <- lm(ISO ~ BRL_PERCENT_knot4, data=Batters)
+ISO_rs4 %>% tidy
+```
+
+```{r, echo=FALSE}
+# regression spline predictions
+ISO_rs4 %>% 
+  augment(se_fit = TRUE) %>% 
+  bind_cols(Batters) %>%
+  rename(ISO = ISO...1) %>%
+  mutate(upper = .fitted + 2*.se.fit,
+         lower = .fitted - 2*.se.fit) %>%
+  ggplot(aes(x = BRL_PERCENT, y = ISO)) + 
+  geom_point() + 
+  geom_line(aes(y = .fitted), color = "blue") + 
+  geom_line(aes(y = upper), lty = 3, color = "blue") + 
+  geom_line(aes(y = lower), lty = 3, color = "blue") + 
+  ggtitle("Regression Spline Fit (df = 10, degree = 3)")
+```
+
+ Among these models, we most prefer the one with df = 5 and degree = 3. It is the smoothest (indicating that it is the least overfit). It is also the most linear. We have a preference for more linear models here. We will explain this when we add the Loess models into the mix. 
+ 
+  Now, we will create 4 more smoothing models using Loess. The models are differentiated by changing the span (the proportion of total observations with non-zero weights that is used to approximate an accordingly-sized section of the data). Below are 10 ISO vs. BRL_PERCENT plots created using every span size increment of 0.1 from .05 to .95. 
+
+```{r, echo=FALSE}
+span_vals <- seq(0.05, 1, .1)
+ISO_full <- data.frame()
+
+for(i in 1:length(span_vals)){
+  
+ISO_lo <- loess(ISO ~ BRL_PERCENT, 
+                     span = span_vals[i],
+                     data = Batters)
+
+ISO_lo_output <- ISO_lo %>% 
+  augment(se_fit = TRUE) %>% 
+  bind_cols(Batters) %>%
+  rename(ISO = ISO...1, BRL_PERCENT = BRL_PERCENT...2) %>%
+  mutate(upper = .fitted + 2*.se.fit,
+         lower = .fitted - 2*.se.fit) %>%
+  mutate(span = span_vals[i]) %>%
+  dplyr::select(ISO, BRL_PERCENT, .fitted, upper, lower, span)
+
+# each time we go through the loop and change the span
+# the new predictions get concatenated onto the full dataset
+ISO_full <- ISO_full %>% bind_rows(ISO_lo_output)
+
+}
+
+ISO_full %>%
+  ggplot(aes(x = BRL_PERCENT, y = ISO)) + 
+  geom_point(alpha = .1) + 
+  geom_line(aes(y = .fitted), color = "blue") + 
+  geom_line(aes(y = upper), lty = 3, color = "blue") + 
+  geom_line(aes(y = lower), lty = 3, color = "blue") + 
+  facet_wrap(~span) + 
+  ggtitle("Loess Fit (changing span)")
+```
+
+  We can see that the smallest span model is drastically overfit to the data, especially considering the probable linearity of the relationship between predictor and response. Below, we plot 4 of these models together to better compare them. The 4 models are those with span=0.15, 0.35, 0.65, 0.95. They were chosen because they are visually differentiable from one another when overlaid and represent the range of models above. 
+
+```{r, echo=FALSE}
+loess_unif <- data.frame()
+spanlist <- c(0.15, 0.35, 0.65, 0.95)
+for (i in 1:length(spanlist))
+{
+  loess_unif_pred <- loess(ISO ~ BRL_PERCENT, span = spanlist[i], 
+                           data = Batters) %>%
+    augment() %>%
+    mutate(span = spanlist[i])
+  
+  loess_unif <- loess_unif %>% bind_rows(loess_unif_pred)
+  
+}
+    loess_unif %>%
+      ggplot(aes(x = BRL_PERCENT, y = ISO)) + 
+      geom_point() + 
+      geom_line(aes(x = BRL_PERCENT, y = .fitted, color = as.factor(span))) + 
+      labs(color = "span") + 
+      ggtitle("ISO vs. BRL_PERCENT: Comparing Loess Models")
+```
+  The lower span models are not very smooth, indicating overfit. When one considers the interpretation of the coefficients, there seems to be little reason for extreme local variations off of a y=-mx+b model. Why would an increase in BRL_PERCENT from one level differ from an identical increase from some other level in terms of how much it changes ISO? The higher-span models, which pay less attention to what appears to be random variance, predict a slight tapering off in slope as BRL_PERCENT increases. This seems far more viable. Even the .95 span model has significant curvature when compared to a line. We feel that this model sufficiently avoids becoming biased and limits excessive bias well. For the same reasons, we prefer this model to any of the regression spline models above. 
+
+
+
+# Something New
+
+## Pre-processing
+All save one variable are used, with FIRST_NAME and LAST_NAME merged to form the identity variable NAME. The categorical variable MODE_AMATEUR_ACQUISITION was removed since only one observation was labelled one of the categories, hence that observation was either in the training or testing data, causing the number of variables in the two datasets to differ by one and cause fitting issues. To convert categorical variables into numerical ones, through one hot encoding, such variables were transformed into vectors with binary values, the number of vectors being the number of categories. Moreover, in accordance with part 3 of this project, an outlier has been removed to leave 131 total observations. 
+
+To ensure our models are as representative of the population as possible according to the metric $R^2$, we split our dataset into training and testing sets by a 2:1 ratio. Within the training dataset, we used cross validation to find the optimal tuning parameter corresponding to the model in question: lambda for Lasso Regression, and k for k-nearest neighbors.
+
+## kNN Regression
+Although we have produced rather high-performing models, the previous methods are all parametric models that have technical conditions assuming, for example, normally distributed errors, or that our response is related to the explanatory variables in the first place. However, there is no way to truly know if these assumptions were valid and representative of our population. Hence, here we use the nonparametric model of k-Nearest Neighbor regression which makes no such assumptions and is thus more robust. Now we can consider all explanatory variables in the dataset and no longer need to worry about multicollinearity, since its nonparametric nature means the algorithm considers all features altogether, instead of separately which would lead to disregard of correlation between those explanatory variables.
+
+Instead of fitting a regression line through data points, for every response variable value, kNN makes a prediction by selecting the k closest points, measured here by Euclidean distance, and taking their mean. In the model below, each of the k points are weighted equally since the model was already performing excellently, instead of weighting closer points more than farther points. 
+
+
+```{r, include=FALSE}
+set.seed(4774)
+Batters$NAME <- paste(Batters$FIRST_NAME, " ",Batters$LAST_NAME)
+named_Batters <- dplyr::select(Batters, -c(FIRST_NAME, LAST_NAME))
+Batters_split <- initial_split(named_Batters, prop = 2/3)
+Batters_train <- training(Batters_split) %>%
+  dplyr::select(-MODE_AMATEUR_ACQUISITION)
+Batters_test <- testing(Batters_split) %>%
+  dplyr::select(-MODE_AMATEUR_ACQUISITION)
+```
+
+Since our dataset is rather small, with the training set containing 87 observations, we used 4 folds to cross validate for k, with a grid search of all possible integers k between 1 and 60, the number of analysis observations in the fold. By $R^2$, the larger k, the better the model. However according to RMSE, a minimum is reached at k=18, with $k\in[11,23]$ being the smallest values, where RMSE differed less than 0.001.
+
+```{r, include= FALSE}
+# create models
+knn_model <- nearest_neighbor(neighbors = tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+  
+knn_recipe <- recipe(
+  ISO ~ ., 
+  data = Batters_train) %>%
+  update_role(NAME, new_role = "ID") %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_zv(all_predictors())
+folds <- vfold_cv(Batters_train, v=4)
+k_grid <- data.frame(neighbors = seq(1,60, by = 1))
+knn_resample <- tune_grid(knn_model, knn_recipe, resamples = folds, grid = k_grid)
+```
+
+```{r, echo = FALSE, fig.cap = "RMSE and R2 of kNN models fitted and predicted on training set"}
+p1 <- autoplot(knn_resample, metric = "rmse")
+p2 <- autoplot(knn_resample, metric = "rsq")
+p2 + p1
+```
+
+```{r, echo = FALSE}
+trainr2_df <- collect_metrics(knn_resample) %>%
+  filter(.metric == "rsq") %>%
+  arrange(desc(mean)) %>% 
+  dplyr::select(neighbors, mean)
+colnames(trainr2_df)[2] <- "train_rsq"
+ ggplot(trainr2_df,aes(x=neighbors,y=train_rsq)) +
+   geom_point() +
+   geom_line(color="blue") +
+   xlab("Number of neighbors") +
+   ylab("R^2") +
+   ggtitle("kNN regression - R^2 vs number of neighbors on train data")
+```
+
+
+```{r, include = FALSE}
+set.seed(99)
+neighbors <- 1:44
+test_rsq <- c()
+for (n in neighbors) {
+  final_model <- nearest_neighbor(neighbors = n) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+  wflow_final <- workflow() %>% 
+    add_model(final_model) %>% 
+    add_recipe(knn_recipe)
+  
+  preds <- wflow_final %>% 
+    fit(data=Batters_train) %>% 
+    predict(new_data = Batters_test) %>%
+    cbind(Batters_test)
+  
+  r2 <- preds %>%
+    rsq(truth = ISO, estimate = .pred)
+  test_rsq[n] <- r2[[3]]
+}
+```
+
+```{r, include=FALSE}
+testr2_df <- data.frame(neighbors, test_rsq)
+ ggplot(testr2_df,aes(x=neighbors,y=test_rsq)) +
+   geom_point() +
+   geom_line(color="green")+
+   xlab("Number of neighbors") +
+   ylab("R^2") +
+   ggtitle("kNN regression - R^2 vs number of neighbors on test data")
+allr2_df <- merge(trainr2_df,testr2_df, by=c("neighbors"))
+remove <-1:10
+small_df <- allr2_df[-remove,]
+```
+
+Since the test dataset has 44 observations, we also made predictions on the testing dataset based on each possible kNN model, $k\in[1,44]$, fitted on the training dataset. In the figure, the dotted blue line represents kNN models predicted against training data, and the red line represents kNN models predicted against testing data. We can see $R^2$ only increases as more neighbors are included for each point's prediction, and surprisingly,  each model reliably performed better when predicted against testing data rather than the training data the models were fit with. The best model according to both testing and training data is the one that includes all observations (the the results for $k\in[1,44]$), but the literature states that a k around the square root of the number of observations (in our case $\sqrt{87} \approx 9$) yields a good model, although our dataset is on the smaller side. Thus, conclude that a kNN model is not necessary. However, this analysis proved that the relationship between our response variable ISO and other explanatory variables exists and is quite linear, thus for the sake of simplicity, we will not focus on a kNN model.
+
+```{r, echo=FALSE, fig.cap="R2 of kNN models predicted against training and testing data, both fitted with training data"}
+ggplot(allr2_df, aes(x=neighbors)) +
+  geom_line(aes(y=train_rsq),color = "steelblue", linetype="twodash") + 
+  geom_line(aes(y=test_rsq), color="darkred") +
+  ylab("rsq") +
+  xlab("Number of Neighbors k")
+```
+
+
+```{r, include = FALSE}
+ final_model <- nearest_neighbor(neighbors = 23) %>% 
+   set_engine("kknn") %>% 
+   set_mode("regression")
+ 
+ wflow_final <- workflow() %>% 
+   add_model(final_model) %>% 
+   add_recipe(knn_recipe)
+ 
+ preds <- wflow_final %>% 
+   fit(data=Batters_train) %>% 
+   predict(named_Batters) %>%
+   cbind(named_Batters)
+ 
+ ggplot(allr2_df, aes(x=neighbors)) +
+   geom_line(aes(y=train_rsq),color = "steelblue", linetype="twodash") + 
+   geom_line(aes(y=test_rsq), color="darkred") 
+ 
+ #ggplot(preds, aes(x = .pred, y = )) +
+ #  geom_point() +
+ #  geom_smooth(formula = y ~ x, method = "lm", se = FALSE)
+```
+
+
+# Summary
+
+  Through our analysis of this data set, we have found that the model that best predicts the ISO of a MLB player with a positive launch angle over a season of at least 502 plate appearances is the LASSO model we created, shown again here. 
+  
+```{r, echo=FALSE}
+best_lasso <- select_best(lasso_cv, metric = "rmse")
+finalize_workflow(lasso_wf %>% add_model(lasso_spec_tune), best_lasso) %>%
+  fit(data = Batters_test) %>% tidy()
+```
+
+  It includes the predictors HR_PERCENT, K_PERCENT, BB_PERCENT, BA, SLG, BRL_PERCENT, PULL_PERCENT, OPPO_PERCENT, GB_PERCENT, HANDEDNESS, POSITION, and DIVISION. With these variables, we can best estimate how much power a hitter will demonstrate in games (according to ISO) over the course of a season. The plot below shows how the ISO values we predicted from our test sample were remarkably close to the actual ISOs posted by those players during the 2021 season. 
+
+```{r, echo=FALSE, fig.cap = "Predicted vs. Observed ISO Values for 3 Models"}
+pred_comp <- ridge_preds %>% bind_rows(lasso_preds) %>% bind_rows(OLS_preds)
+
+pred_comp %>%
+  ggplot(aes(x = ISO, y = .pred, color = method)) +
+  geom_smooth(se=FALSE) +
+  geom_abline(slope = 1, intercept = 0) +
+  geom_point(alpha=1)
+```
+
+  From an applicability standpoint, this model is interesting in that we can see the relative contributions/importance of various traits and statistics on game power. To see that handedness and position play a role is illuminating. However, if our goal is to predict a player's ISO using only statistics that reflect player traits or skills, then our original MLR/OLS model (with predictors BRL_PERCENT, PULL_PERCENT, Z_SWING_PERCENT and BB_PERCENT) is most illuminating. While it does not predict ISO with as much certainty, it will allow us to predict future ISOs better because it relies on traits and skills more so than past statistics. 

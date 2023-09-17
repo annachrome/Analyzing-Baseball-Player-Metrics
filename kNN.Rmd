@@ -1,0 +1,189 @@
+---
+title: "kNN part 4"
+author: "Anna, Riley"
+date: "5/8/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 8, 
+                      fig.align = 'center')
+
+
+library(tidymodels)
+library(schrute)
+library(tidyverse)
+library(tidymodels)
+library(knitr)
+library(broom)
+library(lubridate)
+library(janitor)
+library(GGally)
+library(ggplot2)
+library(rsample)
+library(patchwork)
+library("readxl")
+library(MASS)
+library(FNN) 
+knitr::opts_chunk$set(echo = TRUE)
+Batters <- read_excel("Batters.xlsx")
+```
+## Pre-processing
+All save one variable are used, with FIRST_NAME and LAST_NAME merged to form the identity variable NAME. The categorical variable MODE_AMATEUR_ACQUISITION was removed since only one observation was labelled one of the categories, hence that observation was either in the training or testing data, causing the number of variables in the two datasets to differ by one and cause fitting issues. To convert categorical variables into numerical ones, through one hot encoding, such variables were transformed into vectors with binary values, the number of vectors being the number of categories. Moreover, in accordance with part 3 of this project, an outlier has been removed to leave 131 total observations. 
+
+To ensure our models are as representative of the population as possible according to the metric $R^2$, we split our dataset into training and testing sets by a 2:1 ratio. Within the training dataset, we used cross validation to find the optimal tuning parameter corresponding to the model in question: lambda for Lasso Regression, and k for k-nearest neighbors.
+
+## kNN Regression
+Although we have produced rather high-performing models, the previous methods are all parametric models that have technical conditions assuming, for example, normally distributed errors, or that our response is related to the explanatory variables in the first place. However, there is no way to truly know if these assumptions were valid and representative of our population. Hence, here we use the nonparametric model of k-Nearest Neighbor regression which makes no such assumptions and is thus more robust. Now we can consider all explanatory variables in the dataset and no longer need to worry about multicollinearity, since its nonparametric nature means the algorithm considers all features altogether, instead of separately which would lead to disregard of correlation between those explanatory variables.
+
+Instead of fitting a regression line through data points, for every response variable value, kNN makes a prediction by selecting the k closest points, measured here by Euclidean distance, and taking their mean. In the model below, each of the k points are weighted equally since the model was already performing excellently, instead of weighting closer points more than farther points. 
+
+
+```{r, include=FALSE}
+set.seed(4774)
+
+Batters$NAME <- paste(Batters$FIRST_NAME, " ",Batters$LAST_NAME)
+named_Batters <- dplyr::select(Batters, -c(FIRST_NAME, LAST_NAME))
+
+Batters_split <- initial_split(named_Batters, prop = 2/3)
+Batters_train <- training(Batters_split) %>%
+  dplyr::select(-MODE_AMATEUR_ACQUISITION)
+Batters_test <- testing(Batters_split) %>%
+  dplyr::select(-MODE_AMATEUR_ACQUISITION)
+```
+
+Since our dataset is rather small, with the training set containing 87 observations, we used 4 folds to cross validate for k, with a grid search of all possible integers k between 1 and 60, the number of analysis observations in the fold. By $R^2$, the larger k, the better the model. However according to RMSE, a minimum is reached at k=18, with $k\in[11,23]$ being the smallest values, where RMSE differed less than 0.001.
+
+```{r, include= FALSE}
+# create models
+
+knn_model <- nearest_neighbor(neighbors = tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+  
+knn_recipe <- recipe(
+  ISO ~ ., 
+  data = Batters_train) %>%
+  update_role(NAME, new_role = "ID") %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_zv(all_predictors())
+
+folds <- vfold_cv(Batters_train, v=4)
+k_grid <- data.frame(neighbors = seq(1,60, by = 1))
+knn_resample <- tune_grid(knn_model, knn_recipe, resamples = folds, grid = k_grid)
+```
+
+```{r, echo= FALSE, fig.cap = "RMSE and R^2 of kNN models fitted and predicted on training set"}
+p1 <- autoplot(knn_resample, metric = "rmse")
+p2 <- autoplot(knn_resample, metric = "rsq")
+p2 + p1
+```
+
+```{r, include= FALSE}
+
+trainr2_df <- collect_metrics(knn_resample) %>%
+  filter(.metric == "rsq") %>%
+  arrange(desc(mean)) %>% 
+  dplyr::select(neighbors, mean)
+
+colnames(trainr2_df)[2] <- "train_rsq"
+
+# ggplot(trainr2_df,aes(x=neighbors,y=train_rsq)) +
+#   geom_point() +
+#   geom_line(color="blue") +
+#   xlab("Number of neighbors") +
+#   ylab("R^2") +
+#   ggtitle("kNN regression - R^2 vs number of neighbors on train data")
+```
+
+
+```{r, include = FALSE}
+set.seed(99)
+neighbors <- 1:44
+test_rsq <- c()
+
+for (n in neighbors) {
+  final_model <- nearest_neighbor(neighbors = n) %>% 
+  set_engine("kknn") %>% 
+  set_mode("regression")
+
+  wflow_final <- workflow() %>% 
+    add_model(final_model) %>% 
+    add_recipe(knn_recipe)
+  
+  preds <- wflow_final %>% 
+    fit(data=Batters_train) %>% 
+    predict(new_data = Batters_test) %>%
+    cbind(Batters_test)
+  
+  r2 <- preds %>%
+    rsq(truth = ISO, estimate = .pred)
+
+  test_rsq[n] <- r2[[3]]
+}
+
+```
+
+```{r, include=FALSE}
+testr2_df <- data.frame(neighbors, test_rsq)
+
+# ggplot(testr2_df,aes(x=neighbors,y=test_rsq)) +
+#   geom_point() +
+#   geom_line(color="green")+
+#   xlab("Number of neighbors") +
+#   ylab("R^2") +
+#   ggtitle("kNN regression - R^2 vs number of neighbors on test data")
+
+allr2_df <- merge(trainr2_df,testr2_df, by=c("neighbors"))
+remove <-1:10
+small_df <- allr2_df[-remove,]
+```
+
+Since the test dataset has 44 observations, we also made predictions on the testing dataset based on each possible kNN model, $k\in[1,44]$, fitted on the training dataset. In the figure, the dotted blue line represents kNN models predicted against training data, and the red line represents kNN models predicted against testing data. We can see $R^2$ only increases as more neighbors are included for each point's prediction, and surprisingly,  each model reliably performed better when predicted against testing data rather than the training data the models were fit with. The best model according to both testing and training data is the one that includes all observations (the the results for $k\in[1,44]$), but the literature states that a k around the square root of the number of observations (in our case $\sqrt{87} \approx 9$) yields a good model, although our dataset is on the smaller side. Thus, conclude that a kNN model is not necessary. However, this analysis proved that the relationship between our response variable ISO and other explanatory variables exists and is quite linear, thus for the sake of simplicity, we will not focus on a kNN model.
+
+```{r, echo=FALSE, fig.cap="R^2 of kNN models predicted against training and testing data, both fitted with training data"}
+ggplot(allr2_df, aes(x=neighbors)) +
+  geom_line(aes(y=train_rsq),color = "steelblue", linetype="twodash") + 
+  geom_line(aes(y=test_rsq), color="darkred") +
+  ylab("rsq") +
+  xlab("Number of Neighbors k")
+```
+
+
+```{r, include=FALSE}
+# final_model <- nearest_neighbor(neighbors = 23) %>% 
+#   set_engine("kknn") %>% 
+#   set_mode("regression")
+# 
+# wflow_final <- workflow() %>% 
+#   add_model(final_model) %>% 
+#   add_recipe(knn_recipe)
+# 
+# preds <- wflow_final %>% 
+#   fit(data=Batters_train) %>% 
+#   predict(Batters) %>%
+#   cbind(Batters)
+# 
+# ggplot(allr2_df, aes(x=neighbors)) +
+#   geom_line(aes(y=train_rsq),color = "steelblue", linetype="twodash") + 
+#   geom_line(aes(y=test_rsq), color="darkred") 
+# 
+# ggplot(preds, aes(x = .pred, y = )) +
+#   geom_point() +
+#   geom_smooth(formula = y ~ x, method = "lm", se = FALSE)
+```
+
+```{r, echo=FALSE}
+
+```
+
+```{r, echo=FALSE}
+
+```
+
+```{r, echo=FALSE}
+
+```
